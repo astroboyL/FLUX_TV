@@ -2,10 +2,15 @@
   "functions": {
     "api/[...path].js": {
       "maxDuration": 60
+    },
+    "api/iptv/*.js": {
+      "maxDuration": 60
+    },
+    "api/epg/*.js": {
+      "maxDuration": 60
     }
   },
   "rewrites": [
-    { "source": "/api/:path*", "destination": "/api/:path*" },
     { "source": "/(.*)", "destination": "/" }
   ]
 }
