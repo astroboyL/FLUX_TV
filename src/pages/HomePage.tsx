@@ -151,6 +151,19 @@ async function readJsonResponse<T>(response: Response, fallbackError: string) {
   const contentType = response.headers.get("content-type") || "";
 
   if (!response.ok) {
+    if (contentType.includes("application/json")) {
+      try {
+        const payload = (await response.json()) as { error?: string };
+        throw new Error(
+          `${fallbackError}: ${payload.error || `HTTP ${response.status}`}`
+        );
+      } catch (error) {
+        if (error instanceof Error && !error.message.includes("Unexpected")) {
+          throw error;
+        }
+      }
+    }
+
     throw new Error(`${fallbackError}: HTTP ${response.status}`);
   }
 
