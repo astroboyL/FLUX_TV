@@ -151,7 +151,10 @@ function normalize(value: string) {
   return value
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase();
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function formatCategory(value: string) {
@@ -220,9 +223,30 @@ function filterLocalItems(items: IptvChannel[], query: string) {
     return items;
   }
 
-  return items.filter((item) =>
-    normalize(`${item.name} ${item.group || ""}`).includes(normalizedQuery)
-  );
+  const queryTokens = normalizedQuery.split(" ").filter((token) => token.length > 1);
+
+  return items.filter((item) => {
+    const searchText = normalize(`${item.name} ${item.group || ""}`);
+
+    if (searchText.includes(normalizedQuery)) {
+      return true;
+    }
+
+    const candidateTokens = searchText.split(" ").filter(Boolean);
+    const matches = queryTokens.filter((queryToken) =>
+      candidateTokens.some(
+        (candidateToken) =>
+          candidateToken.includes(queryToken) ||
+          queryToken.includes(candidateToken) ||
+          (queryToken.length > 3 &&
+            candidateToken.length > 3 &&
+            candidateToken[0] === queryToken[0] &&
+            Math.abs(candidateToken.length - queryToken.length) <= 2)
+      )
+    );
+
+    return matches.length >= Math.max(1, Math.ceil(queryTokens.length * 0.6));
+  });
 }
 
 function asItemList(value: unknown) {

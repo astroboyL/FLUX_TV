@@ -73,6 +73,147 @@ function normalizeText(value: string) {
     .toLowerCase();
 }
 
+function normalizeSearchText(value: string) {
+  return normalizeText(value)
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getSearchTokens(value: string) {
+  return normalizeSearchText(value)
+    .split(" ")
+    .filter((token) => token.length > 1);
+}
+
+function getLevenshteinDistance(a: string, b: string, maxDistance: number) {
+  if (Math.abs(a.length - b.length) > maxDistance) {
+    return maxDistance + 1;
+  }
+
+  const previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  const current = new Array<number>(b.length + 1);
+
+  for (let i = 1; i <= a.length; i += 1) {
+    current[0] = i;
+    let rowMin = current[0];
+
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      current[j] = Math.min(
+        previous[j] + 1,
+        current[j - 1] + 1,
+        previous[j - 1] + cost
+      );
+      rowMin = Math.min(rowMin, current[j]);
+    }
+
+    if (rowMin > maxDistance) {
+      return maxDistance + 1;
+    }
+
+    for (let j = 0; j <= b.length; j += 1) {
+      previous[j] = current[j];
+    }
+  }
+
+  return previous[b.length];
+}
+
+function isCloseSearchToken(queryToken: string, candidateToken: string) {
+  if (queryToken.length < 3 || candidateToken.length < 3) {
+    return false;
+  }
+
+  if (queryToken[0] !== candidateToken[0]) {
+    return false;
+  }
+
+  const maxDistance =
+    queryToken.length <= 4 ? 1 : queryToken.length <= 8 ? 2 : 3;
+
+  return getLevenshteinDistance(queryToken, candidateToken, maxDistance) <= maxDistance;
+}
+
+function getFuzzySearchScore(item: IptvItem, query: string) {
+  const normalizedQuery = normalizeSearchText(query);
+
+  if (!normalizedQuery) {
+    return 1;
+  }
+
+  const searchText =
+    item.searchText ||
+    normalizeSearchText(`${item.name} ${item.group || ""} ${item.tvgName || ""}`);
+
+  if (searchText.includes(normalizedQuery)) {
+    return 1000 - Math.min(searchText.indexOf(normalizedQuery), 300);
+  }
+
+  const queryTokens = getSearchTokens(normalizedQuery);
+  const candidateTokens = searchText.split(" ").filter(Boolean);
+  const nameTokens = getSearchTokens(item.name || "");
+
+  if (!queryTokens.length || !candidateTokens.length) {
+    return 0;
+  }
+
+  let matchedTokens = 0;
+  let score = 0;
+
+  for (const queryToken of queryTokens) {
+    if (candidateTokens.includes(queryToken)) {
+      matchedTokens += 1;
+      score += nameTokens.includes(queryToken) ? 170 : 120;
+      continue;
+    }
+
+    if (candidateTokens.some((token) => token.startsWith(queryToken))) {
+      matchedTokens += 1;
+      score += nameTokens.some((token) => token.startsWith(queryToken)) ? 145 : 95;
+      continue;
+    }
+
+    if (
+      queryToken.length > 3 &&
+      candidateTokens.some((token) => token.includes(queryToken))
+    ) {
+      matchedTokens += 1;
+      score += 75;
+      continue;
+    }
+
+    if (candidateTokens.some((token) => isCloseSearchToken(queryToken, token))) {
+      matchedTokens += 1;
+      score += nameTokens.some((token) => isCloseSearchToken(queryToken, token))
+        ? 110
+        : 58;
+    }
+  }
+
+  const requiredMatches =
+    queryTokens.length === 1 ? 1 : Math.ceil(queryTokens.length * 0.62);
+
+  if (matchedTokens < requiredMatches) {
+    return 0;
+  }
+
+  const bestNameDistance = queryTokens.reduce((total, queryToken) => {
+    const distances = nameTokens
+      .filter((token) => token[0] === queryToken[0])
+      .map((token) => getLevenshteinDistance(queryToken, token, 4));
+
+    return total + Math.min(...distances, 5);
+  }, 0);
+
+  return (
+    score +
+    matchedTokens * 12 -
+    bestNameDistance * 12 -
+    Math.max(0, candidateTokens.length - 5)
+  );
+}
+
 function formatCategoryForCopy(value: string) {
   return value
     .normalize("NFD")
@@ -344,7 +485,9 @@ function isQualityCategory(group: string) {
 }
 
 function prepareCatalogItem(item: IptvItem): IptvItem {
-  const searchText = normalizeText(`${item.name} ${item.group || ""}`);
+  const searchText = normalizeSearchText(
+    `${item.name} ${item.group || ""} ${item.tvgName || ""} ${item.tvgId || ""}`
+  );
 
   return {
     ...item,
@@ -475,18 +618,19 @@ function getFilteredItems({
   animeOnly?: boolean;
   excludeAnime?: boolean;
 }) {
-  const normalizedQuery = normalizeText(query);
+  const normalizedQuery = normalizeSearchText(query);
 
-  return items.filter((item) => {
+  return items
+    .map((item) => ({
+      item,
+      searchScore: normalizedQuery ? getFuzzySearchScore(item, normalizedQuery) : 1,
+    }))
+    .filter(({ item, searchScore }) => {
     const matchesType = type === "all" || item.contentType === type;
     const matchesSection = type === "all" || belongsToSection(item, type);
     const matchesCategory =
       !category || category === "Todos" || (item.group || "Sem categoria") === category;
-    const matchesQuery =
-      !normalizedQuery ||
-      (item.searchText || normalizeText(`${item.name} ${item.group || ""}`)).includes(
-        normalizedQuery
-      );
+    const matchesQuery = !normalizedQuery || searchScore > 0;
     const matchesCodec = includeRiskyCodecs || !hasBrowserRiskyCodec(item);
     const matchesAnime = !animeOnly || isAnimeCatalogItem(item);
     const matchesAnimeExclusion = !excludeAnime || !isAnimeCatalogItem(item);
@@ -500,7 +644,9 @@ function getFilteredItems({
       matchesAnime &&
       matchesAnimeExclusion
     );
-  });
+  })
+    .sort((a, b) => b.searchScore - a.searchScore)
+    .map(({ item }) => item);
 }
 
 function hasBrowserRiskyCodec(item: IptvItem) {
@@ -1056,22 +1202,26 @@ export default defineConfig(({ mode }) => {
               }
 
               if (url.pathname === "/api/iptv/search") {
-                const query = normalizeText(url.searchParams.get("q") || "");
+                const query = normalizeSearchText(url.searchParams.get("q") || "");
                 const type = url.searchParams.get("type") as
                   | IptvContentType
                   | "all"
                   | null;
 
                 const results = catalog.items
-                  .filter((item) => {
+                  .map((item) => ({
+                    item,
+                    searchScore: query ? getFuzzySearchScore(item, query) : 1,
+                  }))
+                  .filter(({ item, searchScore }) => {
                     const matchesType =
                       !type || type === "all" || item.contentType === type;
-                    const matchesQuery =
-                      !query ||
-                      (item.searchText || normalizeText(`${item.name} ${item.group || ""}`)).includes(query);
+                    const matchesQuery = !query || searchScore > 0;
 
                     return matchesType && matchesQuery;
                   })
+                  .sort((a, b) => b.searchScore - a.searchScore)
+                  .map(({ item }) => item)
                   .slice(0, 120);
 
                 sendJson(response, 200, { results });
