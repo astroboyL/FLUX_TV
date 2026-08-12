@@ -147,6 +147,23 @@ function writeStorage<T>(key: string, value: T) {
   window.localStorage.setItem(key, JSON.stringify(value));
 }
 
+async function readJsonResponse<T>(response: Response, fallbackError: string) {
+  const contentType = response.headers.get("content-type") || "";
+
+  if (!response.ok) {
+    throw new Error(`${fallbackError}: HTTP ${response.status}`);
+  }
+
+  if (!contentType.includes("application/json")) {
+    const preview = (await response.text()).slice(0, 80);
+    throw new Error(
+      `${fallbackError}: a API retornou ${contentType || "conteudo invalido"} (${preview})`
+    );
+  }
+
+  return (await response.json()) as T;
+}
+
 function normalize(value: string) {
   return value
     .normalize("NFD")
@@ -1480,15 +1497,14 @@ function DetailDialog({
           tvgName: item.tvgName,
         },
       }),
-    })
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error("Sinopse indisponivel");
-        }
-
-        return response.json();
       })
-      .then((data: { synopsis?: string }) => {
+      .then((response) => {
+        return readJsonResponse<{ synopsis?: string }>(
+          response,
+          "Sinopse indisponivel"
+        );
+      })
+      .then((data) => {
         if (!cancelled && data.synopsis) {
           setSynopsis(data.synopsis);
         }
@@ -2114,11 +2130,10 @@ export function Component() {
         cache: "no-store",
       });
 
-      if (!response.ok) {
-        throw new Error(`Catalogo indisponivel: HTTP ${response.status}`);
-      }
-
-      const data = (await response.json()) as IptvCatalog;
+      const data = await readJsonResponse<IptvCatalog>(
+        response,
+        "Catalogo indisponivel"
+      );
       setCatalog(data);
       setSelectedItem((current) => current || data.featured);
     } catch (loadError) {
@@ -2159,16 +2174,12 @@ export function Component() {
       }
       const response = await fetch(`/api/iptv/items?${params.toString()}`);
 
-      if (!response.ok) {
-        throw new Error(`Itens indisponiveis: HTTP ${response.status}`);
-      }
-
-      const data = (await response.json()) as {
+      const data = await readJsonResponse<{
         items: IptvChannel[];
         total: number;
         page: number;
         hasMore: boolean;
-      };
+      }>(response, "Itens indisponiveis");
       const safeItems = asItemList(data.items).filter((item) =>
         matchesSection(item, activeSection)
       );
@@ -2228,14 +2239,16 @@ export function Component() {
         ),
       ]);
 
-      if (!moviesResponse.ok || !seriesResponse.ok) {
-        throw new Error("Sugestoes indisponiveis.");
-      }
-
-      const [moviesData, seriesData] = (await Promise.all([
-        moviesResponse.json(),
-        seriesResponse.json(),
-      ])) as [{ items: IptvChannel[] }, { items: IptvChannel[] }];
+      const [moviesData, seriesData] = await Promise.all([
+        readJsonResponse<{ items: IptvChannel[] }>(
+          moviesResponse,
+          "Sugestoes de filmes indisponiveis"
+        ),
+        readJsonResponse<{ items: IptvChannel[] }>(
+          seriesResponse,
+          "Sugestoes de series indisponiveis"
+        ),
+      ]);
 
       setSmartItems(
         uniqById([...asItemList(moviesData.items), ...asItemList(seriesData.items)])
