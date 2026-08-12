@@ -316,6 +316,209 @@ async function parsePlaylistResponse(response) {
   return { items, counts };
 }
 
+function getXtreamConfig() {
+  const baseUrl = process.env.VITE_APP_XTREAM_BASE_URL;
+  const username = process.env.VITE_APP_XTREAM_USERNAME;
+  const password = process.env.VITE_APP_XTREAM_PASSWORD;
+
+  if (!baseUrl || !username || !password) {
+    return undefined;
+  }
+
+  return {
+    baseUrl: baseUrl.replace(/\/$/, ""),
+    username,
+    password,
+  };
+}
+
+function getXtreamApiUrl(config, action) {
+  return `${config.baseUrl}/player_api.php?username=${encodeURIComponent(
+    config.username
+  )}&password=${encodeURIComponent(config.password)}&action=${action}`;
+}
+
+async function fetchXtreamJson(config, action) {
+  const response = await fetchWithTimeout(getXtreamApiUrl(config, action), {
+    headers: {
+      Accept: "application/json, text/plain, */*",
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36",
+      Referer: `${config.baseUrl}/`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Xtream ${action}: HTTP ${response.status}`);
+  }
+
+  const text = await response.text();
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`Xtream ${action}: resposta nao veio em JSON valido`);
+  }
+}
+
+function buildXtreamCategoryMap(categories) {
+  const map = new Map();
+
+  if (!Array.isArray(categories)) {
+    return map;
+  }
+
+  for (const category of categories) {
+    if (category?.category_id && category?.category_name) {
+      map.set(String(category.category_id), String(category.category_name));
+    }
+  }
+
+  return map;
+}
+
+function getXtreamGroup(categoryMap, categoryId, fallback, prefix) {
+  const category = categoryMap.get(String(categoryId || "")) || fallback;
+  return `${prefix} | ${category}`;
+}
+
+function normalizeXtreamItems({ config, liveStreams, vodStreams, seriesList, categories }) {
+  const liveCategories = buildXtreamCategoryMap(categories.live);
+  const movieCategories = buildXtreamCategoryMap(categories.movie);
+  const seriesCategories = buildXtreamCategoryMap(categories.series);
+  const encodedUsername = encodeURIComponent(config.username);
+  const encodedPassword = encodeURIComponent(config.password);
+  const items = [];
+  const counts = { live: 0, movie: 0, series: 0 };
+
+  if (Array.isArray(liveStreams)) {
+    for (const stream of liveStreams) {
+      if (!stream?.stream_id || !stream?.name) {
+        continue;
+      }
+
+      counts.live += 1;
+      items.push({
+        id: `xtream-live-${stream.stream_id}`,
+        name: String(stream.name),
+        url: `${config.baseUrl}/live/${encodedUsername}/${encodedPassword}/${stream.stream_id}.m3u8`,
+        logo: stream.stream_icon,
+        group: getXtreamGroup(
+          liveCategories,
+          stream.category_id,
+          "Canais",
+          "CANAIS"
+        ),
+        tvgId: stream.epg_channel_id,
+        tvgName: stream.name,
+        contentType: "live",
+      });
+    }
+  }
+
+  if (Array.isArray(vodStreams)) {
+    for (const stream of vodStreams) {
+      if (!stream?.stream_id || !stream?.name) {
+        continue;
+      }
+
+      const extension = String(stream.container_extension || "mp4").replace(/^\./, "");
+      counts.movie += 1;
+      items.push({
+        id: `xtream-movie-${stream.stream_id}`,
+        name: String(stream.name),
+        url: `${config.baseUrl}/movie/${encodedUsername}/${encodedPassword}/${stream.stream_id}.${extension}`,
+        logo: stream.stream_icon,
+        group: getXtreamGroup(
+          movieCategories,
+          stream.category_id,
+          "Filmes",
+          "FILMES"
+        ),
+        tvgId: String(stream.stream_id),
+        tvgName: stream.name,
+        contentType: "movie",
+      });
+    }
+  }
+
+  if (Array.isArray(seriesList)) {
+    for (const series of seriesList) {
+      if (!series?.series_id || !series?.name) {
+        continue;
+      }
+
+      counts.series += 1;
+      items.push({
+        id: `xtream-series-${series.series_id}`,
+        name: String(series.name),
+        url: `${config.baseUrl}/player_api.php?username=${encodedUsername}&password=${encodedPassword}&action=get_series_info&series_id=${series.series_id}`,
+        logo: series.cover,
+        group: getXtreamGroup(
+          seriesCategories,
+          series.category_id,
+          "Series",
+          "SERIES"
+        ),
+        tvgId: String(series.series_id),
+        tvgName: series.name,
+        contentType: "series",
+      });
+    }
+  }
+
+  return { items, counts };
+}
+
+async function loadXtreamCatalog() {
+  const config = getXtreamConfig();
+
+  if (!config) {
+    throw new Error("Configure VITE_APP_XTREAM_BASE_URL, USERNAME e PASSWORD na Vercel.");
+  }
+
+  const results = await Promise.allSettled([
+    fetchXtreamJson(config, "get_live_categories"),
+    fetchXtreamJson(config, "get_vod_categories"),
+    fetchXtreamJson(config, "get_series_categories"),
+    fetchXtreamJson(config, "get_live_streams"),
+    fetchXtreamJson(config, "get_vod_streams"),
+    fetchXtreamJson(config, "get_series"),
+  ]);
+
+  const [liveCategories, movieCategories, seriesCategories] = results
+    .slice(0, 3)
+    .map((result) => (result.status === "fulfilled" ? result.value : []));
+  const [liveStreams, vodStreams, seriesList] = results
+    .slice(3)
+    .map((result) => (result.status === "fulfilled" ? result.value : []));
+
+  const parsed = normalizeXtreamItems({
+    config,
+    liveStreams,
+    vodStreams,
+    seriesList,
+    categories: {
+      live: liveCategories,
+      movie: movieCategories,
+      series: seriesCategories,
+    },
+  });
+
+  const parsedTotal = parsed.counts.live + parsed.counts.movie + parsed.counts.series;
+
+  if (parsedTotal < 10) {
+    const failures = results
+      .filter((result) => result.status === "rejected")
+      .map((result) => result.reason?.message)
+      .filter(Boolean)
+      .join("; ");
+    throw new Error(failures || "Xtream JSON sem conteudo suficiente.");
+  }
+
+  return parsed;
+}
+
 function hasBrowserRiskyCodec(item) {
   const text = item.searchText || normalizeSearchText(`${item.name} ${item.group || ""}`);
   return text.includes("h265") || text.includes("h 265") || text.includes("hevc");
@@ -543,6 +746,31 @@ function describePlaylistUrl(url) {
   }
 }
 
+function buildCatalog(preparedItems) {
+  const sectionItems = buildSectionItems(preparedItems);
+
+  return {
+    createdAt: Date.now(),
+    items: preparedItems,
+    sectionItems,
+    counts: {
+      live: sectionItems.live.length,
+      movie: sectionItems.movie.length,
+      series: sectionItems.series.length,
+    },
+    categories: {
+      live: buildCategories(sectionItems.live, "live"),
+      movie: buildCategories(sectionItems.movie, "movie"),
+      series: buildCategories(sectionItems.series, "series"),
+    },
+    rails: {
+      live: buildRails(sectionItems.live, "live"),
+      movie: buildRails(sectionItems.movie, "movie"),
+      series: buildRails(sectionItems.series, "series"),
+    },
+  };
+}
+
 async function loadCatalog() {
   if (catalogCache && Date.now() - catalogCache.createdAt < CATALOG_TTL_MS) {
     return catalogCache;
@@ -554,10 +782,10 @@ async function loadCatalog() {
 
   catalogLoadingPromise = (async () => {
     const playlistUrls = getPlaylistUrls();
-    let lastError = "";
+    const errors = [];
 
     if (!playlistUrls.length) {
-      throw new Error("Configure VITE_APP_IPTV_PLAYLIST_URL na Vercel.");
+      errors.push("Nenhuma URL M3U/HLS configurada.");
     }
 
     for (const playlistUrl of playlistUrls) {
@@ -571,51 +799,39 @@ async function loadCatalog() {
         });
 
         if (!response.ok) {
-          lastError = `${describePlaylistUrl(playlistUrl)}: HTTP ${response.status}`;
+          errors.push(`${describePlaylistUrl(playlistUrl)}: HTTP ${response.status}`);
           continue;
         }
 
         const parsed = await parsePlaylistResponse(response);
         const preparedItems = parsed.items.map(prepareCatalogItem);
-        const sectionItems = buildSectionItems(preparedItems);
         const parsedTotal =
           parsed.counts.live + parsed.counts.movie + parsed.counts.series;
 
         if (parsedTotal < 10) {
-          lastError = `${describePlaylistUrl(
-            playlistUrl
-          )}: lista sem conteudo reproduzivel`;
+          errors.push(
+            `${describePlaylistUrl(playlistUrl)}: lista sem conteudo reproduzivel`
+          );
           continue;
         }
 
-        catalogCache = {
-          createdAt: Date.now(),
-          items: preparedItems,
-          sectionItems,
-          counts: {
-            live: sectionItems.live.length,
-            movie: sectionItems.movie.length,
-            series: sectionItems.series.length,
-          },
-          categories: {
-            live: buildCategories(sectionItems.live, "live"),
-            movie: buildCategories(sectionItems.movie, "movie"),
-            series: buildCategories(sectionItems.series, "series"),
-          },
-          rails: {
-            live: buildRails(sectionItems.live, "live"),
-            movie: buildRails(sectionItems.movie, "movie"),
-            series: buildRails(sectionItems.series, "series"),
-          },
-        };
+        catalogCache = buildCatalog(preparedItems);
 
         return catalogCache;
       } catch (error) {
-        lastError = error instanceof Error ? error.message : "falha ao carregar lista";
+        errors.push(error instanceof Error ? error.message : "falha ao carregar lista");
       }
     }
 
-    throw new Error(lastError || "Nenhuma lista IPTV respondeu.");
+    try {
+      const parsed = await loadXtreamCatalog();
+      catalogCache = buildCatalog(parsed.items.map(prepareCatalogItem));
+      return catalogCache;
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : "falha ao carregar Xtream JSON");
+    }
+
+    throw new Error(errors.filter(Boolean).join("; ") || "Nenhuma lista IPTV respondeu.");
   })().finally(() => {
     catalogLoadingPromise = undefined;
   });
