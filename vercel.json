@@ -1,13 +1,16 @@
 {
   "functions": {
     "api/[...path].js": {
-      "maxDuration": 60
+      "maxDuration": 60,
+      "regions": ["gru1"]
     },
     "api/iptv/*.js": {
-      "maxDuration": 60
+      "maxDuration": 60,
+      "regions": ["gru1"]
     },
     "api/epg/*.js": {
-      "maxDuration": 60
+      "maxDuration": 60,
+      "regions": ["gru1"]
     }
   },
   "rewrites": [

@@ -726,12 +726,12 @@ function getPlaylistUrls() {
         ]
       : [];
 
-  return [
+  return Array.from(new Set([
     ...xtreamUrls,
     process.env.VITE_APP_IPTV_PLAYLIST_URL,
     process.env.VITE_APP_IPTV_M3U_URL,
     process.env.VITE_APP_IPTV_SSIPTV_URL,
-  ].filter(Boolean);
+  ].filter(Boolean)));
 }
 
 function describePlaylistUrl(url) {
@@ -794,7 +794,9 @@ async function loadCatalog() {
           headers: {
             Accept:
               "application/x-mpegURL, application/vnd.apple.mpegurl, text/plain, */*",
-            "User-Agent": "Mozilla/5.0 IPTV Player",
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36",
+            Referer: "http://assistz.top/",
           },
         });
 
