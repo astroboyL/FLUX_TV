@@ -504,11 +504,43 @@ function getFilteredItems({
 }
 
 function getPlaylistUrls() {
+  const xtreamBaseUrl = process.env.VITE_APP_XTREAM_BASE_URL;
+  const xtreamUsername = process.env.VITE_APP_XTREAM_USERNAME;
+  const xtreamPassword = process.env.VITE_APP_XTREAM_PASSWORD;
+  const xtreamUrls =
+    xtreamBaseUrl && xtreamUsername && xtreamPassword
+      ? [
+          `${xtreamBaseUrl.replace(/\/$/, "")}/get.php?username=${encodeURIComponent(
+            xtreamUsername
+          )}&password=${encodeURIComponent(
+            xtreamPassword
+          )}&type=m3u_plus&output=m3u8`,
+          `${xtreamBaseUrl.replace(/\/$/, "")}/get.php?username=${encodeURIComponent(
+            xtreamUsername
+          )}&password=${encodeURIComponent(
+            xtreamPassword
+          )}&type=m3u_plus&output=ts`,
+        ]
+      : [];
+
   return [
+    ...xtreamUrls,
     process.env.VITE_APP_IPTV_PLAYLIST_URL,
     process.env.VITE_APP_IPTV_M3U_URL,
     process.env.VITE_APP_IPTV_SSIPTV_URL,
   ].filter(Boolean);
+}
+
+function describePlaylistUrl(url) {
+  try {
+    const parsedUrl = new URL(url);
+    const output = parsedUrl.searchParams.get("output");
+    const type = parsedUrl.searchParams.get("type");
+    const detail = [type, output].filter(Boolean).join("/");
+    return `${parsedUrl.hostname}${detail ? ` (${detail})` : ""}`;
+  } catch {
+    return "lista configurada";
+  }
 }
 
 async function loadCatalog() {
@@ -539,7 +571,7 @@ async function loadCatalog() {
         });
 
         if (!response.ok) {
-          lastError = `${playlistUrl}: HTTP ${response.status}`;
+          lastError = `${describePlaylistUrl(playlistUrl)}: HTTP ${response.status}`;
           continue;
         }
 
@@ -550,7 +582,9 @@ async function loadCatalog() {
           parsed.counts.live + parsed.counts.movie + parsed.counts.series;
 
         if (parsedTotal < 10) {
-          lastError = `${playlistUrl}: lista sem conteudo reproduzivel`;
+          lastError = `${describePlaylistUrl(
+            playlistUrl
+          )}: lista sem conteudo reproduzivel`;
           continue;
         }
 
